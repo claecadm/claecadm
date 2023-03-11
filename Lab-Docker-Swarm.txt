@@ -1,0 +1,91 @@
+## 1
+# Instalando o Manager
+docker swarm init --advertise-addr $(hostname -i)
+    # docker swarm join-token worker
+    # docker swarm join-token manager
+docker info
+docker node ls
+
+## 2
+# Instalando os Workers
+docker swarm join --token XPTO-1-xxxx-yyyy x.y.z.w:2377
+
+## 3
+# Inspecionando os Nós
+docker node ls
+docker node inspect self --pretty
+docker node update --availability drain <node_name> # ("active"|"pause"|"drain")
+
+## 4
+# Deploy de um Service
+docker service create --replicas 1 --name nginx nginx
+docker service ls
+docker service inspect --pretty nginx
+docker service ps nginx
+
+## 5
+# Scale a service
+docker service scale nginx=3
+
+## 6
+# Remove a service
+docker service rm nginx
+
+## 7
+# Rolling Updates
+# --update-delay : Tempo de delay entre os updades de uma task.
+# --update-parallelism : Número máximo de updates simultâneos.
+# --update-failure-action : O que fazer em caso de falha, o padrão é pausar o update.
+docker service create --replicas 3 --name nginx --update-delay 10s nginx
+docker service inspect --pretty nginx
+
+## 8
+# https://docs.docker.com/engine/swarm/ingress/
+# Expor o Serviço externamente
+docker service update --publish-add published=8080,target=80 nginx
+
+    # docker service create \
+    #   --name nginx \
+    #   --publish published=8080,target=80 \
+    #   --update-delay 10s \
+    #   --replicas 3 \
+    #   nginx
+
+docker service ps nginx
+docker service ls
+docker service inspect --format="{{json .Endpoint.Spec.Ports}}" nginx
+
+## 9
+# Add Health Check
+docker service update \
+      --health-cmd "curl --fail http://localhost || exit 1" \
+      --health-interval 15s \
+      --health-retries 3 \
+      --health-start-period 5s \
+      --health-timeout 3s \
+      nginx
+
+## 10
+# Secrets e Configs
+
+cat <<EOF | docker config create nginx-index -
+<html>
+<h1> Testando Config ... </h1>
+</html>
+EOF
+
+docker config ls
+docker config inspect nginx-index
+
+docker service update \
+    --config-add src=nginx-index,target="/usr/share/nginx/html/index.html" \
+    nginx
+
+echo secreta | docker secret create senha -
+docker secret ls
+docker secret inspect senha
+docker service update --secret-add senha nginx
+# No host onde o container roda
+    docker exec -it <container_id> bash
+    df -h | grep secrets 
+    cat /run/secrets/senha

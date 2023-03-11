@@ -1,0 +1,371 @@
+## 1
+# Cert Authentication
+kubectl get csr
+
+mkdir user-certs
+openssl genrsa -out user-certs/myuser.key 2048
+openssl req -new -key user-certs/myuser.key -subj "/CN=myuser" -out user-certs/myuser.csr
+
+REQUEST=$(cat user-certs/myuser.csr | base64 -w 0)
+
+cat <<EOF | kubectl apply -f -
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: myuser
+spec:
+  request: $REQUEST
+  signerName: kubernetes.io/kube-apiserver-client
+  expirationSeconds: 86400  # one day
+  usages:
+  - client auth
+EOF
+
+kubectl get csr
+kubectl certificate approve myuser
+kubectl get csr/myuser -o yaml
+kubectl get csr myuser -o jsonpath='{.status.certificate}'| base64 -d > user-certs/myuser.crt
+
+cat user-certs/myuser.crt
+openssl x509 -in user-certs/myuser.crt -text -noout
+
+## 2
+# Kubeconfig File
+    # Cluster
+    # Context
+    # User
+
+kubectl config get-contexts
+
+kubectl config set-credentials myuser \
+    --client-key=user-certs/myuser.key \
+    --client-certificate=user-certs/myuser.crt \
+    --embed-certs=true
+
+kubectl config set-context myuser \
+    --cluster=default --user=myuser
+
+kubectl config view
+kubectl config use-context myuser
+
+kubectl config use-context default
+kubectl create ns myuser
+kubectl -n myuser create deployment nginx --image=nginx
+
+kubectl -n myuser create role developer --verb=create --verb=get --verb=list --verb=update --verb=delete --resource=pods
+kubectl -n myuser create rolebinding developer-binding-myuser --role=developer --user=myuser
+
+kubectl config use-context myuser
+kubectl auth can-i create deployments --namespace myuser # --as myuser
+kubectl auth can-i create pods --namespace myuser # --as myuser
+
+## 3
+# API do Kubernetes - Por debaixo do Capô
+# https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/
+# https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#list-pod-v1-core
+
+curl -k https://127.0.0.1:6443/api/v1/namespaces/myuser/pods \
+    --key user-certs/myuser.key \
+    --cert user-certs/myuser.crt
+
+kubectl proxy &
+curl http://127.0.0.1:8001
+curl http://127.0.0.1:8001/api/v1/namespaces
+curl http://127.0.0.1:8001/version
+
+kubectl api-resources --namespaced=true
+kubectl api-resources --namespaced=false
+
+## 4
+# RBAC
+kubectl create ns ns1
+
+kubectl -n ns1 create role deployer --verb=create --resource=deployments #-o yaml --dry-run=client
+kubectl -n ns1 create rolebinding bob-deployer --role=deployer --user=bob #-o yaml --dry-run=client
+
+kubectl auth can-i create deployments --namespace ns1 --as bob
+kubectl auth can-i create deployments --namespace default --as bob
+kubectl auth can-i delete deployments --namespace ns1 --as bob
+
+kubectl create clusterrole deployer --verb=create --verb=delete --resource=deployments #-o yaml --dry-run=client
+kubectl -n ns1 create rolebinding bob-deployer-cr --clusterrole=deployer --user=bob #-o yaml --dry-run=client
+
+kubectl auth can-i list deployments --namespace ns1 --as bob
+
+kubectl create clusterrole deployer-plus --verb=create --verb=delete --verb=get --verb=list --resource=deployments
+kubectl create clusterrolebinding bob-deployer-crb --clusterrole=deployer-plus --user=bob #-o yaml --dry-run=client
+
+kubectl -n ns1 get role | grep deployer
+kubectl -n ns1 get rolebinding | grep deployer
+kubectl get clusterrole | grep deployer
+kubectl get clusterrolebinding | grep deployer
+
+kubectl describe clusterrole deployer-plus
+kubectl describe clusterrolebinding bob-deployer-crb # e o namespace??? # users nao sao namespaceds resources mas serviceaccouts sim
+# https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#clusterrolebinding-v1-rbac-authorization-k8s-io
+# https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#usersubject-v1beta1-flowcontrol-apiserver-k8s-io
+# https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#serviceaccountsubject-v1beta1-flowcontrol-apiserver-k8s-io
+
+kubectl auth can-i list deployments --namespace default --as bob
+
+## 5
+# ServiceAccounts
+
+kubectl get sa
+kubectl get secret
+kubectl get secret default-token-xxxxx -o yaml
+
+TOKEN=$(kubectl get secret default-token-xxxxx -o jsonpath='{.data.token}'| base64 -d)
+curl -ks https://127.0.0.1:6443/version  --header "Authorization: Bearer $TOKEN"
+
+# Porque não usar sempre a serviceaccount default?
+kubectl create sa teste
+kubectl create deployment teste --image=nginx -o yaml --dry-run=client > teste.yaml
+        # serviceAccountName: teste
+kubectl apply -f teste.yaml
+kubectl describe po teste-xxxx-yyyy | grep -A 2 Mounts
+kubectl exec -it teste-85975f8db5-f2vwc -- bash
+
+        APISERVER=https://kubernetes.default.svc
+        SERVICEACCOUNT=/var/run/secrets/kubernetes.io/serviceaccount
+        NAMESPACE=$(cat ${SERVICEACCOUNT}/namespace)
+        TOKEN=$(cat ${SERVICEACCOUNT}/token)
+        CACERT=${SERVICEACCOUNT}/ca.crt
+
+        curl --cacert ${CACERT} --header "Authorization: Bearer ${TOKEN}" -X GET \
+            ${APISERVER}/api
+        curl --cacert ${CACERT} --header "Authorization: Bearer ${TOKEN}" -X GET \
+            ${APISERVER}/apis/apps/v1/namespaces/default/deployments
+
+kubectl create clusterrolebinding sa-deployer-crb \
+    --clusterrole=deployer-plus \
+    --serviceaccount=default:teste \
+    --namespace=default
+
+kubectl auth can-i list deployments \
+    --namespace default \
+    --as system:serviceaccount:default:teste
+
+kubectl auth can-i list deployments \
+    --namespace default \
+    --as system:serviceaccount:default:default
+
+## 6
+# Security Context
+
+# Subindo como Root sem restricao
+kubectl run generic-busybox --image=busybox --command --  sh -c "sleep 1h"
+
+# Subindo como usuário 1000 e grupo 3000
+cat <<EOF | kubectl apply -f - 
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sec-cxt-busybox
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 3000
+    fsGroup: 2000
+  containers:
+  - name: sec-cxt-busybox
+    image: busybox
+    command: [ "sh", "-c", "sleep 1h" ]
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+EOF
+
+kubectl get po
+
+kubectl exec -it generic-busybox -- sh
+    id
+    cd /tmp
+    touch teste
+
+kubectl exec -it sec-cxt-busybox -- sh
+kubectl delete po sec-cxt-busybox
+
+# Permitindo escrita em certos diretórios
+cat <<EOF | kubectl apply -f - 
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sec-cxt-busybox
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 3000
+    fsGroup: 2000
+  containers:
+  - name: sec-cxt-busybox
+    image: busybox
+    command: [ "sh", "-c", "sleep 1h" ]
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+    volumeMounts:
+    - name: tmp
+      mountPath: /tmp
+  volumes:
+  - name: tmp
+    emptyDir: {}
+EOF
+
+## 7
+# Network Policy
+
+kubectl create namespace ns1
+kubectl -n ns1 run app1 --image=nginx --labels=tier=frontend
+kubectl -n ns1 expose pod app1 --port=80
+
+kubectl -n ns1 run db1 --image=mysql --labels=tier=db --env=MYSQL_ALLOW_EMPTY_PASSWORD=yes
+kubectl -n ns1 expose pod db1 --port=3306
+
+kubectl -n ns1 get pods --show-labels
+kubectl -n ns1 get svc --show-labels
+
+# Testando acesso do NS2 ---> NS1
+kubectl create namespace ns2
+kubectl -n ns2 run app2 --image nicolaka/netshoot --command --  sh -c "sleep 1h"
+
+kubectl -n ns2 exec -it app2 -- bash
+
+    curl app1.ns1.svc.cluster.local
+    telnet db1.ns1.svc.cluster.local 3306
+
+# https://kubernetes.io/pt-br/docs/concepts/services-networking/network-policies/
+
+# Aplicando a regra para bloquear todo acesso entrante (ingress) ao namespace ns1
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-ingress
+  namespace: ns1
+spec:
+  podSelector: {}  # Seleciona todos os pods do namespace
+  ingress:
+  - from:                 
+    - podSelector: {} # Seleciona os pods do namespace e permite a entrada
+  policyTypes:
+  - Ingress
+EOF
+
+kubectl -n ns1 get netpol
+kubectl -n ns1 describe netpol deny-ingress
+
+# Repetir o Teste da app2 localizada no ns2
+
+# Subir o APP2 dentro do Namespace NS1 e Repetir o teste anterior
+kubectl -n ns1 run app2 --image nicolaka/netshoot --command --  sh -c "sleep 1h"
+kubectl -n ns1 exec -it app2 -- bash
+kubectl -n ns1 get pods --show-labels
+
+
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-ingress
+  namespace: ns1
+spec:
+  podSelector: {}
+  policyTypes: # Nao existe autorizacao interna para os pods
+  - Ingress
+EOF
+
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tier-allow
+  namespace: ns1
+spec:
+  podSelector:
+    matchLabels:
+      tier: db
+  ingress:
+  - from:                 
+    #- namespaceSelector:
+    #    matchLabels:
+    #      ns: ns1 # k8s 1.21- # kubectl label ns ns1 ns=ns1
+    #- namespaceSelector:
+    #    matchLabels:
+    #      kubernetes.io/metadata.name: ns1 # k8s 1.21+
+    #  podSelector:
+    - podSelector:
+        matchLabels:
+          tier: frontend
+  policyTypes:
+  - Ingress
+EOF
+
+# kubectl -n ns1 label pod app2 tier=frontend
+
+## 8
+# Docker Registry Secret / imagePullSecrets
+# paulovigne/tools:kubestr
+
+cat <<EOF | kubectl apply -f - 
+apiVersion: v1
+kind: Pod
+metadata:
+  name: priv-image
+spec:
+  containers:
+  - name: tools
+    image: paulovigne/tools:kubestr
+EOF
+
+#    imagePullPolicy: Always
+#  imagePullSecrets:
+#    - name: docker-hub
+
+kubectl get po
+kubectl describe po priv-image
+
+kubectl create secret docker-registry docker-hub \
+    --docker-username=paulovigne \
+    --docker-password=xxxxxxxxxx #--docker-server=hub.docker.com
+
+kubectl describe secret docker-hub
+
+
+
+## 9 Resource Limits
+
+kubectl create ns rlimit
+
+# No Recurso
+
+cat <<EOF | kubectl -n rlimit apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: frontend
+spec:
+  containers:
+  - name: app
+    image: nginx
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "250m"
+      limits:
+        memory: "128Mi"
+        cpu: "500m"
+EOF
+
+
+# No Namespace
+cat <<EOF | kubectl -n rlimit apply -f -
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cpumenquota
+spec:
+  hard:
+    limits.cpu: 700m
+    limits.memory: 300Mi
+EOF

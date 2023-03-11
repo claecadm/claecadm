@@ -1,0 +1,252 @@
+## 1
+# Prereqs
+
+# - 2vcpus e 2gb ram
+# - Swap disabled
+
+# Como Root em todos os hosts
+
+free -m
+
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+br_netfilter
+EOF
+modprobe br_netfilter
+
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+EOF
+sudo sysctl --system
+
+## 2
+# Install CRI - Docker
+
+# Como Root em todos os hosts
+
+# Limpando versoes antigas
+apt-get remove docker docker-engine docker.io containerd runc
+# Instalando prereqs
+apt-get update
+apt-get -y install \
+    ca-certificates \
+    curl \
+    gnupg \
+    lsb-release
+# Adicionando chave pública do docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+# Instalando o Docker
+
+# apt-cache madison docker-ce
+
+apt-get update
+apt-get -y install docker-ce docker-ce-cli containerd.io
+
+docker version
+
+# Acertando o CGROUP Driver
+cat > /etc/docker/daemon.json <<EOF
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2",
+  "storage-opts": [
+    "overlay2.override_kernel_check=true"
+  ]
+}
+EOF
+
+systemctl daemon-reload
+systemctl restart docker
+
+
+## 3
+# Instalando o KubeAdm
+# https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/
+# https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/
+
+# Como Root em todos os hosts
+
+# Instalando os prereqs
+sudo apt-get update
+sudo apt-get install -y apt-transport-https ca-certificates curl
+# Adicionando a chave pública do repo
+sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
+# Adicionando o Repo
+echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+# Instalando os pacotes necessários
+sudo apt-get update
+# apt-cache madison kubeadm
+sudo apt-get install -y kubelet=1.22.6-00 kubeadm=1.22.6-00 kubectl=1.22.6-00
+sudo apt-mark hold kubelet kubeadm kubectl
+
+## 4
+# Criando um cluster com o KubeAdm
+
+#
+# Como root no master node
+#
+
+kubeadm init #--ignore-preflight-errors=all
+
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+kubectl completion bash | sudo tee /etc/bash_completion.d/kubectl > /dev/null
+
+#
+# Como root no(s) worker(s) node(s)
+#
+
+kubeadm join <control-plane-host>:<control-plane-port> --token <token> --discovery-token-ca-cert-hash sha256:<hash>
+
+#
+# # Perdi o --discovery-token-ca-cert-hash
+# openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | \
+#   openssl dgst -sha256 -hex | sed 's/^.* //'
+#
+# # Perdi o Token
+# kubeadm token list # 24h de vida
+# kubeadm token create
+
+
+## 5
+#  Pod Network AddOn (CNI)
+
+#
+# Como root no master node
+#
+
+kubectl get ns
+kubectl get po -A
+
+kubectl describe node <NodeName> | grep KubeletNotReady # | grep -i taint
+kubectl run nginx --image=nginx
+kubectl describe po nginx
+kubectl delete po nginx
+
+cat > nginx.yaml <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: null
+  labels:
+    run: nginx
+  name: nginx-cniless
+spec:
+  containers:
+  - image: nginx
+    name: nginx
+    resources: {}
+  dnsPolicy: ClusterFirst
+  #hostNetwork: true
+  restartPolicy: Always
+  tolerations:
+  - operator: "Exists"
+    effect: "NoSchedule"
+EOF
+
+kubectl apply -f nginx.yaml
+
+# --> Apos o hostNetwork: true teste pelo ip externo se o nginx abre via Browser
+
+# https://www.weave.works/docs/net/latest/kubernetes/kube-addon/
+kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')"
+
+## 6
+# Instalando o Ingress Controller
+# https://kubernetes.github.io/ingress-nginx/deploy/
+kubectl create deployment nginx --image=nginx
+kubectl expose deployment nginx --port=80
+kubectl create ingress nginx --rule=nginx.x.x.x.x.sslip.io/*=nginx:80
+
+wget https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.1.1/deploy/static/provider/cloud/deploy.yaml
+# type: LoadBalancer --> type: NodePort # Linha 276
+# nodePort 30080 e 30081
+# externalTrafficPolicy para Cluster
+vim deploy.yaml
+kubectl apply -f deploy.yaml
+
+# kubectl get ingressclasses nginx
+# kubectl edit ingressclasses nginx
+#  annotations:
+#    ingressclass.kubernetes.io/is-default-class: "true"
+#
+# Ou colocar a Flag --watch-ingress-without-class=true no DS
+# Ou colocar na Spec no Manifesto do Ingress 
+#  --> ingressClassName: nginx # Util para multiplos ingress
+
+
+## 7
+# Instalando o LongHorn
+kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/master/deploy/longhorn.yaml
+
+## 8
+# Atualizando o Cluster
+# https://v1-22.docs.kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+
+apt update
+apt-cache madison kubeadm
+
+#
+# MASTER NODE
+#
+
+# Upgrade KubeADM
+# Se nao for multimaster gerará indisponibilidade do apiserver
+# Componentes: Kubeapi, Controller, Scheduler, Etcd, CoreDNS
+apt-mark unhold kubeadm && \
+apt-get update && apt-get install -y kubeadm=1.23.3-00 && \
+apt-mark hold kubeadm
+
+kubeadm version
+kubeadm upgrade plan
+
+kubeadm upgrade apply 1.23.3 # kubeadm upgrade node (multimaster)
+
+# Preparando o Nó Master para o upgrade do kubelet
+# Se nao for multimaster gerará indisponibilidade do apiserver
+kubectl drain <node-to-drain> --ignore-daemonsets
+
+apt-mark unhold kubelet kubectl && \
+apt-get update && apt-get install -y kubelet=1.23.3-00 kubectl=1.23.3-00 && \
+apt-mark hold kubelet kubectl
+
+systemctl daemon-reload
+systemctl restart kubelet
+
+# Colocando o Master operacional
+kubectl uncordon <node-to-drain>
+
+#
+# WORKER NODES
+#
+
+# Upgrade KubeADM
+apt-mark unhold kubeadm && \
+apt-get update && apt-get install -y kubeadm=1.23.3-00 && \
+apt-mark hold kubeadm
+
+kubeadm upgrade node
+
+# Upgrade Kubelet
+# Apenas o drain/uncordon precisa ser feito no master ou 
+# qualquer outro lugar com acesso ao cluster
+kubectl drain <node-to-drain> --ignore-daemonsets
+
+apt-mark unhold kubelet kubectl && \
+apt-get update && apt-get install -y kubelet=1.23.3-00 kubectl=1.23.3-00 && \
+apt-mark hold kubelet kubectl
+
+systemctl daemon-reload
+systemctl restart kubelet
+
+kubectl uncordon <node-to-drain>
+

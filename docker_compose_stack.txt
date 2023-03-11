@@ -1,0 +1,75 @@
+# https://docs.docker.com/engine/swarm/stack-deploy/
+
+# Criando um Registry dentro do Swarm
+docker service create --name registry --publish published=5000,target=5000 registry:2
+docker service ls
+curl http://localhost:5000/v2/
+
+# Vamos criar e buildar uma App em python que depende de um Cache Redis
+mkdir stackdemo
+cd stackdemo
+
+cat > app.py <<EOF
+from flask import Flask
+from redis import Redis
+
+app = Flask(__name__)
+redis = Redis(host='redis', port=6379)
+
+@app.route('/')
+def hello():
+    count = redis.incr('hits')
+    return 'Hello World! I have been seen {} times.\n'.format(count)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000, debug=True)
+EOF
+
+cat > requirements.txt <<EOF
+flask
+redis
+EOF
+
+cat > Dockerfile <<EOF
+FROM python:3.4-alpine
+ADD . /code
+WORKDIR /code
+RUN pip install -r requirements.txt
+CMD ["python", "app.py"]
+EOF
+
+# Vamos criar um docker compose que subirá a app e o redis
+cat > docker-compose.yaml <<EOF
+version: "3.9"
+
+services:
+  web:
+    image: 127.0.0.1:5000/stackdemo
+    build: .
+    ports:
+      - "8000:8000"
+  redis:
+    image: redis:alpine
+EOF
+
+# Vamos testar solo, sem o swarm o docker compose
+docker-compose up -d
+docker-compose ps
+curl http://localhost:8000
+
+# Vamos parar o compose
+docker-compose down --volumes
+
+# Vamsos enviar a imagem buildada para o registry dentro do swarm
+docker images
+docker-compose push
+curl http://localhost:5000/v2/_catalog
+
+# Vamos agora criar um stack dentro do swarm
+docker stack deploy --compose-file docker-compose.yaml stackdemo
+docker stack ls
+docker stack services stackdemo
+
+curl http://localhost:8000
+curl http://<node ou lb>:8000
+docker stack rm stackdemo

@@ -1,0 +1,550 @@
+# https://docs.kubernetes.com
+# https://kubernetes.io/docs/reference/kubectl/cheatsheet/
+
+## 1
+# Inspeção do Cluster
+kubectl version
+kubectl cluster-info
+
+kubectl get nodes #--show-labels
+
+kubectl get namespace
+
+kubectl get pods #--show-labels
+kubectl get services
+
+kubectl -n kube-system get pods
+kubectl -n kube-system get services
+
+kubectl get pods -A
+kubectl -n kube-system get all
+
+kubectl top nodes
+kubectl top pods
+
+## 2
+# POD vs Deployment
+    # Criando um pod
+    kubectl run nginx --image=nginx #--labels app=demo
+    kubectl run nginx --image=nginx --dry-run=client -o yaml
+    # Manipulando o POD
+    kubectl get po nginx
+    kubectl delete po nginx
+    kubectl delete pods --selector app=demo
+    kubectl get pods --selector app=demo
+    kubectl delete all --selector app=demo
+    # Se o serviço dentro do pod travar o que acontece?
+    # Se colocar restartPolicy: Never
+    # Se o nó que roda o pod morrer?
+    # Posso escalar o pod?
+    kubectl describe pod nginx
+
+    # Criando um deployment
+    kubectl create deployment nginx --image=nginx
+    kubectl create deployment nginx --image=nginx --dry-run=client -o yaml
+    # Se o serviço dentro do pod travar o que acontece?
+    # Se colocar restartPolicy: Never
+    # Se o nó que roda o pod morrer?
+    # Posso escalar o pod?
+    kubectl describe deployment nginx
+    kubectl scale deployment nginx --replicas=3
+    kubectl get rs 
+
+# Rollout deployment
+    # Atualizando uma Imagem
+    kubectl create deployment kubernetes-bootcamp --image=gcr.io/google-samples/kubernetes-bootcamp:v1
+    kubectl expose deployment kubernetes-bootcamp --type=NodePort --port=8080 --target-port=8080
+    export NODE_PORT=$(kubectl get services/kubernetes-bootcamp -o go-template='{{(index .spec.ports 0).nodePort}}')
+    export HOST_INTERNAL_IP=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' | awk '{print $1}')
+    echo APP_ADDR=http://$HOST_INTERNAL_IP:$NODE_PORT
+    curl http://$HOST_INTERNAL_IP:$NODE_PORT
+    # Update
+    kubectl set image deployments/kubernetes-bootcamp kubernetes-bootcamp=jocatalin/kubernetes-bootcamp:v2
+    kubectl rollout status deployments/kubernetes-bootcamp
+    # Fail
+    kubectl set image deployments/kubernetes-bootcamp kubernetes-bootcamp=gcr.io/google-samples/kubernetes-bootcamp:v10
+    kubectl rollout status deployments/kubernetes-bootcamp
+    # Undo
+    kubectl rollout undo deployments/kubernetes-bootcamp
+    # Gravando comentário no histórico
+    kubectl rollout history deployments/kubernetes-bootcamp
+        # kubectl set image deployments/kubernetes-bootcamp \
+        #    kubernetes-bootcamp=jocatalin/kubernetes-bootcamp:v2 \
+        #    --record
+    # Deployment Strategy
+        # Recreate
+        # RollingUpdate (default)
+            # strategy:
+            #     rollingUpdate:
+            #     maxSurge: 25%
+            #     maxUnavailable: 25%
+
+            # strategy:
+            #     rollingUpdate:
+            #     maxSurge: 1
+            #     maxUnavailable: 1
+
+## 3
+# Kubernetes Services
+
+# Canivete Suiço
+# https://hub.docker.com/r/nicolaka/netshoot
+# kubectl run tmp-shell --rm -i --tty --image nicolaka/netshoot -- /bin/bash
+# kubectl run tmp-shell --rm -i --tty --overrides='{"spec": {"hostNetwork": true}}' --image nicolaka/netshoot -- /bin/bash
+
+# Rede de PODs e Rede de Serviços
+
+# Service Type Cluster IP
+kubectl scale deployment kubernetes-bootcamp --replicas=3
+
+kubectl expose deployment kubernetes-bootcamp --name=bootcamp-clusterip --port=8080
+kubectl expose deployment kubernetes-bootcamp --name=bootcamp-clusterip-fw --port=80 --target-port=8080
+# Service Type HeadLess
+kubectl expose deployment kubernetes-bootcamp --name=bootcamp-headless --overrides='{"spec": {"clusterIP": "None"}}' --port=8080
+    # É Possível fazer um Port Forward em um HeadLess Service???
+    # kubectl expose deployment kubernetes-bootcamp --name=bootcamp-headless-fw --overrides='{"spec": {"clusterIP": "None"}}' --port=80 --target-port=8080
+# Service Type NodePort
+kubectl expose deployment kubernetes-bootcamp --name=bootcamp-nodeport --type=NodePort --overrides='{"spec": {"ports": [{"nodePort": 30080, "port": 8080, "target": 8080}]}}' --port=8080
+# Service Type LoadBalancer
+kubectl expose deployment kubernetes-bootcamp --name=bootcamp-loadbalancer --type=LoadBalancer --port=8080 --target-port=8080
+
+kubectl get svc -o wide
+
+## 4
+# Ingress
+
+kubectl create ns test-ingress 
+
+kubectl -n test-ingress create deployment nginx-ing --image=nginx
+kubectl -n test-ingress create deployment bootcamp-ing --image=gcr.io/google-samples/kubernetes-bootcamp:v1
+
+kubectl -n test-ingress expose deployment nginx-ing --name=nginx-ing-svc --port=8080 --target-port=80
+kubectl -n test-ingress expose deployment bootcamp-ing --name=bootcamp-ing-svc --port=8080
+
+kubectl -n test-ingress create ingress nginx-ing --rule=nginx.<IP-PUBLICO-COM-TRACO>.sslip.io/*=nginx-ing-svc:8080
+kubectl -n test-ingress create ingress bootcamp-ing --rule=bootcamp.<IP-PUBLICO-COM-TRACO>.sslip.io/*=bootcamp-ing-svc:8080
+
+kubectl -n test-ingress get deployment
+kubectl -n test-ingress get svc -o wide
+kubectl -n test-ingress get ing
+kubectl -n test-ingress describe ingress bootcamp-ing
+kubectl -n test-ingress get ingress bootcamp-ing -o yaml
+
+## 5
+# Env, ConfigMaps e Secrets
+
+# Environment Variables
+
+      #    env:
+      #        - name: APP_COLLOR
+      #          value: pink
+      #    
+      #    env:
+      #        - name: APP_COLLOR
+      #          valueFrom:
+      #            configMapKeyRef:
+      #               key:
+      #               name:
+      #
+      #    env:
+      #        - name: APP_COLLOR
+      #          valueFrom:
+      #            secretKeyRef:
+      #               key:
+      #               name:
+
+# Criando Secret/ConfigMap
+
+kubectl create ns test-cm
+kubectl -n test-cm create cm test-cli \
+    --from-literal=nome=paulo \
+    --from-literal=sobrenome=vigne \
+    --from-literal=idade=38
+
+kubectl -n test-cm get cm
+kubectl -n test-cm get cm test-cli -o yaml
+kubectl -n test-cm describe cm test-cli
+
+mkdir configmap
+cat > configmap/config.properties <<EOF
+nome=paulo
+sobrenome=vigne
+idate=38
+EOF
+
+kubectl -n test-cm create cm test-envfile --from-env-file=configmap/config.properties
+kubectl -n test-cm get cm
+kubectl -n test-cm get cm test-envfile -o yaml
+kubectl -n test-cm describe cm test-envfile
+
+kubectl -n test-cm create cm test-file --from-file=configmap/config.properties
+kubectl -n test-cm get cm
+kubectl -n test-cm get cm test-file -o yaml
+kubectl -n test-cm describe cm test-file
+
+kubectl -n test-cm create secret generic test-envfile --from-env-file=configmap/config.properties
+    # Tipos de Secrets (principais):
+    #   - generic
+    #   - tls
+    #   - docker-registry
+kubectl -n test-cm get secret
+kubectl -n test-cm get secret test-envfile -o yaml
+kubectl -n test-cm describe secret test-envfile
+
+# Declarando uma Variável diretamente no POD ou Deployment
+
+cat <<EOF | kubectl -n test-cm apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-sleep
+spec:
+  containers:
+  - env:
+    - name: APP_COLLOR
+      value: pink
+    name: busybox
+    image: busybox
+    args:
+    - sleep
+    - "1000000"
+EOF
+
+kubectl -n test-cm get po
+kubectl -n test-cm describe po busybox-sleep | grep -B 3 -A 3 Environ
+kubectl -n test-cm exec -it busybox-sleep -- env
+kubectl -n test-cm delete po busybox-sleep
+
+# Formas de Injetar ConfigMapes e Secrets como variáveis:
+    # - Single Env
+    # - Env
+    # - Volume
+
+cat <<EOF | kubectl -n test-cm apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-single-env
+spec:
+  containers:
+  - env:
+    - name: NOME
+      valueFrom:
+        configMapKeyRef:
+           key: nome
+           name: test-envfile
+    name: busybox
+    image: busybox
+    args:
+    - sleep
+    - "1000000"
+EOF
+
+kubectl -n test-cm describe po busybox-single-env | grep -B 3 -A 3 Environ
+kubectl -n test-cm exec -it busybox-single-env -- env
+
+cat <<EOF | kubectl -n test-cm apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-env
+spec:
+  containers:
+  - envFrom:
+      - configMapRef:
+          name: test-envfile
+    name: busybox
+    image: busybox
+    args:
+    - sleep
+    - "1000000"
+EOF
+
+kubectl -n test-cm describe po busybox-env | grep -B 3 -A 3 Environ
+kubectl -n test-cm exec -it busybox-env -- env
+
+cat <<EOF | kubectl -n test-cm apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-vol
+spec:
+  containers:
+  - name: busybox
+    image: busybox
+    args:
+    - sleep
+    - "1000000"
+    volumeMounts:
+    - name: env-volume
+      mountPath: /app/env
+    - name: config-volume
+      mountPath: /app/config
+  volumes:
+    - name: env-volume
+      configMap:
+        name: test-envfile
+    - name: config-volume
+      configMap:
+        name: test-file
+EOF
+
+kubectl -n test-cm get cm
+kubectl -n test-cm describe po busybox-vol
+kubectl -n test-cm exec -it busybox-vol -- sh
+    # df -h | grep app
+    # cd /app && ls
+
+## 6
+# Designando Pods à Nós e Afinidade e Anti-Afinidade de Nós
+
+# nodeName e nodeSelector
+
+kubectl create ns test-aff
+
+cat > nginx-nodeselector.yaml <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: nginx-nodename
+  name: nginx-nodename
+  namespace: test-aff
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-nodename
+  template:
+    metadata:
+      labels:
+        app: nginx-nodename
+    spec:
+      nodeName: <NOME_DO_NO>
+      containers:
+      - image: nginx
+        name: nginx
+EOF
+
+kubectl apply -f nginx-nodeselector.yaml
+kubectl -n test-aff get po -o wide
+kubectl -n test-aff scale deployment nginx-nodename --replicas=10
+
+vim nginx-nodeselector.yaml
+
+      nodeSelector:
+        type: turbo
+
+kubectl apply -f nginx-nodeselector.yaml
+kubectl -n test-aff get po -o wide
+kubectl -n test-aff describe pod nginx-nodename-
+
+kubectl label nodes <NOME_DO_NO> type=turbo
+kubectl get node --show-labels
+
+# Node Affinity
+vim nginx-nodeselector.yaml
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: type
+                operator: In
+                values:
+                - turbo
+                - ssd
+
+kubectl apply -f nginx-nodeselector.yaml
+kubectl -n test-aff get po -o wide
+kubectl -n test-aff scale deployment nginx-nodename --replicas=10
+kubectl label nodes <NOME_DO_NO> type=ssd
+kubectl -n test-aff delete po -l app=nginx-nodename
+
+## 7
+# Taints e Tolerations
+
+kubectl -n test-aff scale deployment nginx-nodename --replicas=5
+cp nginx-nodeselector.yaml nginx-toleration.yaml
+    # Trocar o Nome do Deployment --> :%s/nginx-nodename/nginx-toleration/g
+    # Replicas: 5
+    # nodeAffinity apenas type: turbo
+    # Adicionar o Toleration
+        # tolerations:
+        # - key: "categoria"
+        #   operator: "Equal"
+        #   value: "vip"
+        #   effect: "NoSchedule"
+        #   --> NoExecute ou sem o atributo effect para ambos
+
+
+kubectl -n test-aff get po -o wide
+kubectl taint nodes <node_name> categoria=vip:NoSchedule
+# Observe os Pods existentes antes de aplicar o NoExecute
+kubectl taint nodes <node_name> categoria=vip:NoExecute
+
+
+## 8
+# Persistência de Volumes
+
+# Instalando o Longhorn
+kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/master/deploy/longhorn.yaml
+
+kubectl -n longhorn-system expose deployment \
+  longhorn-ui --type=NodePort \
+  --overrides='{"spec": {"ports": [{"nodePort": 30080, "port": 8000, "target": 8000}]}}' --port=8000
+
+kubectl get sc
+kubectl create ns test-sc
+
+# RWO
+
+cat <<EOF | kubectl -n test-sc apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rwo-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+
+# RWX
+
+cat <<EOF | kubectl -n test-sc apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rwx-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+
+kubectl get pv
+kubectl -n test-sc get pvc
+
+kubectl -n test-sc create deployment nginx --image=nginx
+kubectl -n test-sc expose deployment nginx --type=NodePort --port=80 --target-port=80
+
+export NODE_PORT=$(kubectl -n test-sc get services/nginx -o go-template='{{(index .spec.ports 0).nodePort}}')
+export HOST_INTERNAL_IP=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' | awk '{print $1}')
+
+echo APP_ADDR=http://$HOST_INTERNAL_IP:$NODE_PORT
+curl http://$HOST_INTERNAL_IP:$NODE_PORT
+
+kubectl -n test-sc exec -it nginx-xxx-yyy -- bash
+echo "TESTE 123" > /usr/share/nginx/html/index.html
+
+kubectl -n test-sc delete po nginx-xxx-yyy
+
+cat > patch.yaml <<EOF
+spec:
+  template:
+    spec:
+      containers:
+        - name: nginx
+          volumeMounts:
+          - mountPath: "/usr/share/nginx/html"
+            name: html
+      volumes:
+        - name: html
+          persistentVolumeClaim:
+            claimName: rwo-pvc
+EOF
+
+kubectl -n test-sc patch deployment nginx --patch-file=patch.yaml
+kubectl -n test-sc exec -it nginx-xxx-yyy -- bash
+df -h
+cd /usr/share/nginx/html
+echo Teste RWO > index.html
+
+kubectl -n test-sc delete po nginx-xxx-yyy
+# Repita o Curl
+
+# E se eu escalar?
+kubectl -n test-sc scale deployment nginx --replicas=3
+kubectl -n test-sc get po
+# O que Houve?
+kubectl -n test-sc get events
+
+cp patch.yaml patch-rwx.yaml
+sed -i 's/rwo-pvc/rwx-pvc/g' patch-rwx.yaml
+kubectl -n test-sc patch deployment nginx --patch-file=patch-rwx.yaml
+kubectl -n test-sc exec -it nginx-xxx-yyy -- bash
+df -h
+cd /usr/share/nginx/html
+echo Teste RWX > index.html
+
+kubectl -n test-sc get deployment nginx -o yaml > nginx-deploy.yaml
+kubectl -n test-sc delete deployment nginx
+kubectl apply -f nginx-deploy.yaml
+
+
+## 9
+# StatefulSets
+
+cat > st-example.yaml <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+spec:
+  ports:
+  - port: 80
+    name: web
+  clusterIP: None
+  selector:
+    app: nginx
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: web
+spec:
+  selector:
+    matchLabels:
+      app: nginx # has to match .spec.template.metadata.labels
+  serviceName: "nginx"
+  replicas: 3 # by default is 1
+  minReadySeconds: 10 # by default is 0
+  template:
+    metadata:
+      labels:
+        app: nginx # has to match .spec.selector.matchLabels
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: nginx
+        image: k8s.gcr.io/nginx-slim:0.8
+        ports:
+        - containerPort: 80
+          name: web
+        volumeMounts:
+        - name: www
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: www
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "longhorn"
+      resources:
+        requests:
+          storage: 1Gi
+EOF
+
+## 10
+# Health Checks e Probes
+# Extra

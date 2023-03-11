@@ -1,0 +1,104 @@
+## 1
+docker ps
+docker images
+
+## 2
+# https://hub.docker.com/_/nginx
+docker pull nginx
+docker run nginx
+
+# Porque o shell ficou preso?
+    # https://github.com/nginxinc/docker-nginx/blob/3a7105159a6c743188cb1c61e4186a9a59c025db/mainline/debian/Dockerfile
+    # ENTRYPOINT vs CMD
+      docker run bretfisher/httping
+      docker run bretfisher/httping google.com
+      # https://github.com/BretFisher/httping-docker/blob/main/Dockerfile
+      # ENTRYPOINT: Estático
+      # CMD: Parametrizável
+
+## 3
+# https://hub.docker.com/_/ubuntu
+docker pull ubuntu
+docker run ubuntu
+# Porque não prendeu o shell?
+    # https://github.com/tianon/docker-brew-ubuntu-core/blob/f2f3f01ed67bab2e24b8c4fda60ef035a871b4c7/focal/Dockerfile
+    docker run -i -t ubuntu
+        # -i : Mantem o STDIN
+        # -t : Aloca um pseudo TTY
+
+## 4
+# Outros parâmentos do docker run:
+# --rm : Remove o container quando sai
+# --restart= : Política de restart: always / on-failure:n / unless-stopped
+# -d : Roda como daemon em background
+# --name: Personaliza o nome para o container em execução
+# -p : Publica a porta do container
+
+docker run --name nginx -d -p 8080:80 nginx
+netstat -tupan | grep LISTEN
+docker stop nginx
+docker run --name nginx -d -p 8080:80 nginx
+docker ps -a
+docker rm nginx
+docker run --rm --name nginx -d -p 80:80 nginx
+
+## 5
+docker logs nginx --tail 10 -f
+docker exec -it nginx bash
+
+docker network ls
+docker network inspect bridge
+ip a
+
+# 6
+mkdir build
+cat > build/index.html <<EOF
+<html>
+<h1> Testando ... </h1>
+</html>
+EOF
+cat > build/Dockerfile <<EOF
+FROM nginx
+COPY index.html /usr/share/nginx/html/index.html
+EOF
+
+cd build
+docker build .
+docker images
+docker tag <image_id> meu_nginx:v1
+docker run --rm --name meu_nginx -d -p 8080:80 meu_nginx:v1
+
+# 7
+docker run --rm --name app_color -e APP_COLOR=pink -d -p 8080:8080 mmumshad/simple-webapp-color
+
+# 8
+mkdir -p ~/volume/nginx
+cat > ~/volume/nginx/index.html <<EOF
+<html>
+<h1> Testando Volume ... </h1>
+</html>
+EOF
+
+docker run --rm --name nginx -d -p 80:80 -v ~/volume/nginx:/usr/share/nginx/html nginx
+
+# 9
+# https://hub.docker.com/_/registry
+# https://docs.docker.com/registry/configuration/
+docker run -d -p 5000:5000 --restart always --name registry registry:2
+docker images
+docker tag meu_nginx:v1 localhost:5000/meu_nginx:v1
+docker images
+docker push localhost:5000/meu_nginx:v1
+curl http://localhost:5000/v2/_catalog
+curl http://localhost:5000/v2/meu_nginx/tags/list
+    # Outro Host
+    docker pull <REGISTRY_IP>:5000/meu_nginx:v1
+    cat > /etc/docker/daemon.json <<EOF
+{"insecure-registries":["<REGISTRY_IP>:5000"]}
+EOF
+    systemctl restart docker
+    docker run --rm --name meu_nginx -d -p 8080:80 <REGISTRY_IP>:5000/meu_nginx:v1
+
+# 10
+    # Lab Extra de Docker Compose
+    # Script Instala Registry
