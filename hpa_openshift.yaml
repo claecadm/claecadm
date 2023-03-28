@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+    app.kubernetes.io/part-of: nginx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      securityContext:
+        runAsUser: 1001080001
+        fsGroup: 1001080000
+      containers:
+      - image: bitnami/nginx:1.21
+        resources:
+          requests:
+            cpu: 25m
+            memory: 50Mi
+          limits:
+            cpu: 75m
+            memory: 100Mi
+        imagePullPolicy: Always
+        name: nginx
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {}
+          privileged: false
+          runAsNonRoot: true
+        ports:
+        - containerPort: 8080
+          name: tcp-nginx
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /
+            port: tcp-nginx
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /
+            port: tcp-nginx
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+        stdin: true
+        tty: true
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+spec:
+  ports:
+  - name: tcp-nginx
+    port: 8080
+    protocol: TCP
+    targetPort: tcp-nginx
+  selector:
+    app: nginx
+  type: ClusterIP
+---
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: nginx
+  labels:
+    app.kubernetes.io/part-of: nginx
+spec:
+  path: /
+  to:
+    kind: Service
+    name: nginx
+    weight: 100
+  port:
+    targetPort: tcp-nginx
+  wildcardPolicy: None
+---
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nginx-auto
+  namespace: pvigne-buildcode
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nginx
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          averageUtilization: 50
+          type: Utilization
+
+# ab -c 1000 -n 100000 http://
+# oc adm top po
