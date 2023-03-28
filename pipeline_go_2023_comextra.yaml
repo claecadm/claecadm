@@ -1,0 +1,142 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: goapp-pipeline
+  namespace: goapp
+spec:
+  finally:
+    - name: uodate-deployment
+      params:
+        - name: SCRIPT
+          value: >-
+            oc set image deployment $(params.deployment-name)
+            $(params.deployment-name)=$(params.IMAGE)
+        - name: VERSION
+          value: latest
+      taskRef:
+        kind: ClusterTask
+        name: openshift-client
+    - name: add-extra-route
+      params:
+        - name: app-default-route
+          value: $(params.app-default-route)
+        - name: app-secondary-route
+          value: $(params.app-secondary-route)
+      taskRef:
+        kind: Task
+        name: add-extra-route
+  params:
+    - default: goapp
+      name: deployment-name
+      type: string
+    - default: 'https://github.com/paulovigne/goapp.git'
+      name: git-url
+      type: string
+    - default: master
+      name: git-revision
+      type: string
+    - default: 'image-registry.openshift-image-registry.svc:5000/goapp/goapp-crud'
+      name: IMAGE
+      type: string
+    - default: openshift
+      name: manifest-dir
+      type: string
+    - default: Dockerfile.openshift
+      name: docker-file
+      type: string
+    - default: openshift/extra
+      name: manifest-dir-extra
+      type: string
+    - default: goapp
+      name: app-default-route
+      type: string
+    - default: landing-page
+      name: app-secondary-route
+      type: string
+  tasks:
+    - name: git-clone
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: submodules
+          value: 'true'
+        - name: depth
+          value: '1'
+        - name: sslVerify
+          value: 'true'
+        - name: crtFileName
+          value: ca-bundle.crt
+        - name: deleteExisting
+          value: 'true'
+        - name: verbose
+          value: 'true'
+        - name: gitInitImage
+          value: >-
+            registry.redhat.io/openshift-pipelines/pipelines-git-init-rhel8@sha256:6c3980b3d28c8fb92b17466f5654d5f484ab893f1673ec8f29e49c0d03f8aca9
+        - name: userHome
+          value: /tekton/home
+      taskRef:
+        kind: ClusterTask
+        name: git-clone
+      workspaces:
+        - name: output
+          workspace: goapp-ws
+    - name: buildah
+      params:
+        - name: IMAGE
+          value: $(params.IMAGE)
+        - name: BUILDER_IMAGE
+          value: >-
+            registry.redhat.io/rhel8/buildah@sha256:ac0b8714cc260c94435cab46fe41b3de0ccbc3d93e38c395fa9d52ac49e521fe
+        - name: STORAGE_DRIVER
+          value: vfs
+        - name: DOCKERFILE
+          value: ./$(params.docker-file)
+        - name: CONTEXT
+          value: .
+        - name: TLSVERIFY
+          value: 'false'
+        - name: FORMAT
+          value: oci
+        - name: SKIP_PUSH
+          value: 'false'
+      runAfter:
+        - git-clone
+      taskRef:
+        kind: ClusterTask
+        name: buildah
+      workspaces:
+        - name: source
+          workspace: goapp-ws
+    - name: apply-manifests
+      params:
+        - name: SCRIPT
+          value: oc apply -f $(params.manifest-dir)
+        - name: VERSION
+          value: latest
+      runAfter:
+        - buildah
+      taskRef:
+        kind: ClusterTask
+        name: openshift-client
+      workspaces:
+        - name: manifest-dir
+          workspace: goapp-ws
+    - name: apply-landpage
+      params:
+        - name: SCRIPT
+          value: oc apply -f $(params.manifest-dir-extra)
+        - name: VERSION
+          value: latest
+      runAfter:
+        - buildah
+      taskRef:
+        kind: ClusterTask
+        name: openshift-client
+      workspaces:
+        - name: manifest-dir
+          workspace: goapp-ws
+  workspaces:
+    - name: goapp-ws

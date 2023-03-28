@@ -1,0 +1,22 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: add-extra-route
+spec:
+  params:
+    - name: app-default-route
+      description: Main app route
+      type: string
+    - name: app-secondary-route
+      description: Route to receive the same host from Default Route
+      type: string
+  steps:
+    - name: patch
+      image: quay.io/openshift/origin-cli:latest
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          HOST=$(oc get route $(inputs.params.app-default-route) -o jsonpath='{.spec.host}')
+          NEWHOST=$(echo $HOST | sed 's/'$(echo $HOST | cut -d. -f1)'/'$(inputs.params.app-secondary-route)'/')
+          oc get ing $(inputs.params.app-secondary-route) -o yaml | sed 's/host:.*/host: '$NEWHOST'/g' |\
+            oc apply -f -
